@@ -259,12 +259,7 @@ impl Session {
     }
 
     fn banner(&mut self) {
-        let mut art = String::new();
-        for line in crate::logo::BANNER.lines() {
-            art.push_str("\x1b[36m");
-            art.push_str(line);
-            art.push_str("\x1b[0m\r\n");
-        }
+        let art = crate::logo::banner();
         self.write_out(art.as_bytes());
 
         let msg = format!(
@@ -276,6 +271,7 @@ impl Session {
             escape_name(self.escape),
         );
         self.note(&msg, "36");
+        self.write_out(b"\r\n");
     }
 
     /// Writes one of our own status lines, kept visually distinct from device output.
