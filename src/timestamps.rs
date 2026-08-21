@@ -15,10 +15,47 @@ pub struct Feed {
 
 /// Splits the incoming byte stream into lines and injects timestamp prefixes
 /// without disturbing the escape sequences the device emits.
+/// Where a line stands inside an escape sequence, so escapes can be told from
+/// anything the reader would actually see.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Esc {
+    None,
+    Start,
+    Csi,
+    Osc,
+    OscTerminator,
+}
+
+fn advance(state: Esc, b: u8) -> Esc {
+    match state {
+        Esc::None if b == 0x1b => Esc::Start,
+        Esc::None => Esc::None,
+        Esc::Start => match b {
+            b'[' => Esc::Csi,
+            b']' | b'P' | b'X' | b'^' | b'_' => Esc::Osc,
+            _ => Esc::None,
+        },
+        Esc::Csi if (0x40..=0x7e).contains(&b) => Esc::None,
+        Esc::Csi => Esc::Csi,
+        Esc::Osc => match b {
+            0x07 => Esc::None,
+            0x1b => Esc::OscTerminator,
+            _ => Esc::Osc,
+        },
+        Esc::OscTerminator if b == b'\\' => Esc::None,
+        Esc::OscTerminator => Esc::Osc,
+    }
+}
+
 pub struct LineAssembler {
     cur: Vec<u8>,
     at_line_start: bool,
     pending_cr: bool,
+    /// Escape bytes seen before the line showed anything. Held back so the
+    /// timestamp can still be printed ahead of them, keeping the device's
+    /// colors applied to its own text and not to our prefix.
+    pending_esc: Vec<u8>,
+    esc: Esc,
     start: Instant,
     prev_line: Instant,
     line_started: Option<(DateTime<Local>, Instant)>,
@@ -31,6 +68,8 @@ impl LineAssembler {
             cur: Vec::with_capacity(256),
             at_line_start: true,
             pending_cr: false,
+            pending_esc: Vec::new(),
+            esc: Esc::None,
             start: now,
             prev_line: now,
             line_started: None,
@@ -54,11 +93,13 @@ impl LineAssembler {
             if self.pending_cr {
                 self.pending_cr = false;
                 if b == b'\n' {
+                    self.release_escapes(&mut f);
                     f.out.extend_from_slice(b"\r\n");
                     self.finish_line(&mut f);
                     continue;
                 }
                 // Lone CR: the device is redrawing the current line in place.
+                self.release_escapes(&mut f);
                 f.out.push(b'\r');
                 self.cur.clear();
                 self.at_line_start = true;
@@ -69,12 +110,24 @@ impl LineAssembler {
                 b'\r' => self.pending_cr = true,
                 b'\n' => {
                     // Raw mode has no ONLCR, so carriage returns are ours to add.
+                    self.release_escapes(&mut f);
                     f.out.extend_from_slice(b"\r\n");
                     self.finish_line(&mut f);
                 }
                 _ => {
+                    let inside_escape = self.esc != Esc::None || b == 0x1b;
+                    self.esc = advance(self.esc, b);
+                    if self.at_line_start && inside_escape {
+                        // Nothing visible yet: a line that turns out to hold
+                        // only escapes gets no timestamp at all.
+                        self.pending_esc.push(b);
+                        self.cur.push(b);
+                        continue;
+                    }
                     if self.at_line_start {
                         self.begin_line(&mut f, ts);
+                        let held = std::mem::take(&mut self.pending_esc);
+                        f.out.extend_from_slice(&held);
                     }
                     f.out.push(b);
                     self.cur.push(b);
@@ -84,9 +137,26 @@ impl LineAssembler {
         f
     }
 
-    /// Emits a CR that was held back waiting to see whether an LF follows.
+    /// Writes out escapes that were being held for a timestamp that will never
+    /// come, because the line ended without showing anything.
+    fn release_escapes(&mut self, f: &mut Feed) {
+        if !self.pending_esc.is_empty() {
+            let held = std::mem::take(&mut self.pending_esc);
+            f.out.extend_from_slice(&held);
+        }
+    }
+
+    /// Emits a CR that was held back waiting to see whether an LF follows, and
+    /// any escapes still waiting on a line that has gone quiet.
     pub fn flush_pending(&mut self) -> Feed {
         let mut f = Feed::default();
+        if !self.pending_esc.is_empty() {
+            self.release_escapes(&mut f);
+            // The prefix can no longer go ahead of these, and printing it after
+            // them would recolour the device's own text. Skip it for this line.
+            self.at_line_start = false;
+            self.line_started = Some((Local::now(), Instant::now()));
+        }
         if self.pending_cr {
             self.pending_cr = false;
             f.out.push(b'\r');
@@ -218,6 +288,49 @@ mod tests {
         let mut a = LineAssembler::new();
         a.feed(b"prompt> ", TsMode::Off);
         assert_eq!(a.partial(), b"prompt> ");
+    }
+
+    #[test]
+    fn a_line_holding_only_escapes_gets_no_timestamp() {
+        // wsh firmware appends its style reset after the newline, so the reset
+        // lands alone on the next line. Stamping that prints an empty row.
+        let mut a = LineAssembler::new();
+        let f = a.feed(b"\x1b[0m\r\n", TsMode::Rel);
+        assert_eq!(out(&f), "\x1b[0m\r\n");
+        assert_eq!(f.lines.len(), 1);
+        assert_eq!(f.lines[0].text(), "");
+    }
+
+    #[test]
+    fn the_timestamp_still_precedes_a_leading_color() {
+        // Order matters: a prefix printed after the colour would reset it and
+        // the device's text would lose its colour.
+        let mut a = LineAssembler::new();
+        let f = a.feed(b"\x1b[32mok\r\n", TsMode::Rel);
+        let s = out(&f);
+        let prefix_at = s.find("\x1b[90m").unwrap();
+        let color_at = s.find("\x1b[32m").unwrap();
+        assert!(prefix_at < color_at, "{s:?}");
+        assert!(s.ends_with("\x1b[32mok\r\n"), "{s:?}");
+    }
+
+    #[test]
+    fn escapes_split_across_chunks_still_hold_the_line() {
+        let mut a = LineAssembler::new();
+        let f1 = a.feed(b"\x1b[3", TsMode::Rel);
+        assert_eq!(out(&f1), "");
+        let f2 = a.feed(b"2mok\r\n", TsMode::Rel);
+        let s = out(&f2);
+        assert!(s.contains("\x1b[90m"), "{s:?}");
+        assert!(s.ends_with("\x1b[32mok\r\n"), "{s:?}");
+    }
+
+    #[test]
+    fn held_escapes_are_released_when_the_line_goes_quiet() {
+        let mut a = LineAssembler::new();
+        a.feed(b"\x1b[0m", TsMode::Rel);
+        let f = a.flush_pending();
+        assert_eq!(out(&f), "\x1b[0m");
     }
 
     #[test]
