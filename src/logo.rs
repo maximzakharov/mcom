@@ -13,11 +13,12 @@ pub enum Style {
 pub const STYLE: Style = Style::Compact;
 
 /// Letter cells, kept apart so the glyphs read as `mcom` rather than as four
-/// identical rectangles.
+/// identical rectangles. The M is four columns wide: the three-column form is
+/// just three verticals, which reads closer to a Ш than to an M.
 const LETTERS: [[&str; 4]; 3] = [
-    ["╔╦╗", "╔═╗", "╔═╗", "╔╦╗"],
-    ["║║║", "║  ", "║ ║", "║║║"],
-    ["╩ ╩", "╚═╝", "╚═╝", "╩ ╩"],
+    ["╔╗╔╗", "╔═╗", "╔═╗", "╔╗╔╗"],
+    ["║╚╝║", "║  ", "║ ║", "║╚╝║"],
+    ["╩  ╩", "╚═╝", "╚═╝", "╩  ╩"],
 ];
 
 /// Blue drifting into teal. Mid-tone on purpose: these stay legible on a light
@@ -120,7 +121,7 @@ mod tests {
     #[test]
     fn letters_are_spaced_apart() {
         let lines = stripped(&banner());
-        assert!(lines[1].starts_with("╔╦╗ ╔═╗ ╔═╗ ╔╦╗"), "{:?}", lines[1]);
+        assert!(lines[1].starts_with("╔╗╔╗ ╔═╗ ╔═╗ ╔╗╔╗"), "{:?}", lines[1]);
     }
 
     #[test]
