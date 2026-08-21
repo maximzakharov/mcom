@@ -84,15 +84,28 @@ pub fn send_break(port: &mut TTYPort) -> Result<()> {
 }
 
 /// Finds the port to reconnect to. The original path comes back first; failing
-/// that, and unless pinned, a single new USB port is taken as the same board
-/// under a new name — macOS renumbers `usbmodem` devices across resets.
-pub fn find_reconnect_target(original: &str, strict: bool) -> Option<String> {
+/// that, and unless pinned, the same device under a new name — macOS renumbers
+/// `usbmodem` devices across resets.
+///
+/// Matching is by device identity, never by "some port is free": a board that
+/// reboots leaves its name available for a moment, and on a bench there is
+/// usually a debug probe plugged in right next to it.
+pub fn find_reconnect_target(
+    original: &str,
+    identity: Option<&str>,
+    strict: bool,
+) -> Option<String> {
     if Path::new(original).exists() {
         return Some(original.to_string());
     }
     if strict {
         return None;
     }
+    if let Some(identity) = identity {
+        return ports::path_for_identity(identity);
+    }
+    // Nothing to match on — a device with no serial number, or not a USB device
+    // at all. A lone USB port is unambiguous, so it is still accepted.
     let usb: Vec<String> = ports::list()
         .into_iter()
         .filter(|p| p.is_usb)
@@ -133,7 +146,21 @@ mod tests {
     #[test]
     fn missing_port_has_no_target_when_pinned() {
         assert_eq!(
-            find_reconnect_target("/dev/definitely-not-here", true),
+            find_reconnect_target("/dev/definitely-not-here", None, true),
+            None
+        );
+    }
+
+    #[test]
+    fn a_known_device_is_never_swapped_for_another_one() {
+        // The board is mid-reset and its identity resolves to nothing. Whatever
+        // else is plugged in — a debug probe, say — must not be picked up.
+        assert_eq!(
+            find_reconnect_target(
+                "/dev/definitely-not-here",
+                Some("usb-no-such-device-if00"),
+                false
+            ),
             None
         );
     }

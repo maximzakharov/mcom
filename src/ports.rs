@@ -175,6 +175,76 @@ fn scan_dev() -> Vec<PortInfo> {
     Vec::new()
 }
 
+/// A stable name for the device behind a port. Port names are not identity:
+/// `/dev/ttyACM0` is whichever board enumerated first, and a reset can hand the
+/// name to something else entirely. Vendor, product and serial do identify it.
+pub fn device_identity(path: &str) -> Option<String> {
+    let path = fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_string());
+    identity_of(&identities(), &path)
+}
+
+/// The port that device currently sits on, if it is plugged in at all.
+pub fn path_for_identity(identity: &str) -> Option<String> {
+    path_of(&identities(), identity)
+}
+
+fn identity_of(entries: &[(String, String)], path: &str) -> Option<String> {
+    entries
+        .iter()
+        .find(|(_, p)| p == path)
+        .map(|(id, _)| id.clone())
+}
+
+fn path_of(entries: &[(String, String)], identity: &str) -> Option<String> {
+    entries
+        .iter()
+        .find(|(id, _)| id == identity)
+        .map(|(_, p)| p.clone())
+}
+
+#[cfg(target_os = "linux")]
+fn identities() -> Vec<(String, String)> {
+    // The by-id name is exactly vendor, product and serial, and it survives a
+    // ttyACM0 -> ttyACM1 renumbering.
+    let Ok(entries) = fs::read_dir("/dev/serial/by-id") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let target = fs::canonicalize(e.path()).ok()?;
+            Some((
+                e.file_name().to_string_lossy().into_owned(),
+                target.to_string_lossy().into_owned(),
+            ))
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn identities() -> Vec<(String, String)> {
+    let Ok(ports) = serialport::available_ports() else {
+        return Vec::new();
+    };
+    ports
+        .into_iter()
+        .filter_map(|p| match p.port_type {
+            // Without a serial number two identical boards are indistinguishable,
+            // so such a device is treated as having no identity at all.
+            serialport::SerialPortType::UsbPort(u) => {
+                let serial = u.serial_number?;
+                Some((
+                    format!("usb-{:04x}:{:04x}-{serial}", u.vid, u.pid),
+                    p.port_name,
+                ))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 pub fn print_list() {
     let ports = list();
     if ports.is_empty() {
@@ -265,6 +335,29 @@ mod tests {
         assert!(is_noise("/dev/cu.Bluetooth-Incoming-Port"));
         assert!(is_noise("/dev/cu.debug-console"));
         assert!(!is_noise("/dev/cu.usbmodem1101"));
+    }
+
+    #[test]
+    fn identity_maps_both_ways() {
+        let entries = vec![
+            (
+                "usb-STMicroelectronics_STM32_Device_344F33483133-if00".to_string(),
+                "/dev/ttyACM0".to_string(),
+            ),
+            (
+                "usb-Black_Magic_Debug_Black_Magic_Probe-if00".to_string(),
+                "/dev/ttyACM1".to_string(),
+            ),
+        ];
+        let stm = identity_of(&entries, "/dev/ttyACM0").unwrap();
+        assert!(stm.contains("STM32"));
+        assert_eq!(path_of(&entries, &stm).as_deref(), Some("/dev/ttyACM0"));
+
+        // The board is unplugged: its identity resolves to nothing, and in
+        // particular not to the debug probe that is still connected.
+        let gone: Vec<(String, String)> = entries[1..].to_vec();
+        assert_eq!(path_of(&gone, &stm), None);
+        assert_eq!(identity_of(&gone, "/dev/ttyACM0"), None);
     }
 
     #[test]

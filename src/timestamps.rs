@@ -41,6 +41,11 @@ impl LineAssembler {
         &self.cur
     }
 
+    /// True when the device has written something it has not terminated yet.
+    pub fn mid_line(&self) -> bool {
+        !self.at_line_start || self.pending_cr
+    }
+
     pub fn feed(&mut self, data: &[u8], ts: TsMode) -> Feed {
         let mut f = Feed::default();
         f.out.reserve(data.len() + 16);
@@ -213,6 +218,16 @@ mod tests {
         let mut a = LineAssembler::new();
         a.feed(b"prompt> ", TsMode::Off);
         assert_eq!(a.partial(), b"prompt> ");
+    }
+
+    #[test]
+    fn mid_line_tracks_unterminated_output() {
+        let mut a = LineAssembler::new();
+        assert!(!a.mid_line());
+        a.feed(b"prompt> ", TsMode::Off);
+        assert!(a.mid_line());
+        a.feed(b"\r\n", TsMode::Off);
+        assert!(!a.mid_line());
     }
 
     #[test]

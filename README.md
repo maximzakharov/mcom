@@ -92,6 +92,12 @@ reconnect to the exact same path · `--escape <CHAR>` use another escape key ·
 says so and waits. When the device returns it reconnects and the log continues —
 including on macOS, where `usbmodem` devices often come back under a new name.
 
+A new name is only accepted when it is provably the same device: mcom remembers
+its vendor, product and serial (`/dev/serial/by-id` on Linux) and matches on
+that. A rebooting board frees its port name for a second or two, and the debug
+probe next to it will not be picked up in the gap. `--strict-port` is stricter
+still — it waits for the exact path it started with.
+
 **macOS:** use `/dev/cu.*`, not `/dev/tty.*`. The `tty` devices block on open
 until the modem asserts DCD, which is why a terminal sometimes just hangs. If you
 pass a `tty` path, mcom switches to the `cu` twin and tells you.

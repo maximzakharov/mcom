@@ -64,6 +64,7 @@ pub struct Session {
     sb: Scrollback,
     log: Option<LogWriter>,
     log_format: crate::cli::LogFormat,
+    identity: Option<String>,
     ts: TsMode,
     escape: u8,
     echo: bool,
@@ -90,6 +91,7 @@ pub fn run(cli: Cli) -> Result<()> {
 
     // Opened before raw mode so failures print as ordinary, readable errors.
     let port = serial::open(&cfg)?;
+    let identity = ports::device_identity(&cfg.path);
 
     let log = match &cli.log {
         Some(p) => Some(LogWriter::open(Some(p), cli.log_format, &cfg.path)?),
@@ -109,6 +111,7 @@ pub fn run(cli: Cli) -> Result<()> {
         sb: Scrollback::new(cli.scrollback),
         log,
         log_format: cli.log_format,
+        identity,
         ts: cli.ts,
         escape: ctrl_byte(cli.escape),
         echo: cli.echo,
@@ -269,7 +272,7 @@ impl Session {
 
     /// Writes one of our own status lines, kept visually distinct from device output.
     fn note(&mut self, text: &str, color: &str) {
-        let line = format!("\x1b[{color}m── {text} ──\x1b[0m\r\n");
+        let line = note_line(text, color, self.asm.mid_line());
         self.write_out(line.as_bytes());
         if let Some(log) = &mut self.log {
             let _ = log.note(text);
@@ -344,7 +347,11 @@ impl Session {
         }
         self.since_reconnect_try = Instant::now();
 
-        let Some(target) = serial::find_reconnect_target(&self.cfg.path, self.strict_port) else {
+        let Some(target) = serial::find_reconnect_target(
+            &self.cfg.path,
+            self.identity.as_deref(),
+            self.strict_port,
+        ) else {
             return Ok(());
         };
         let mut cfg = self.cfg.clone();
@@ -354,6 +361,7 @@ impl Session {
         if let Ok(port) = serial::open(&cfg) {
             let renamed = cfg.path != self.cfg.path;
             self.cfg = cfg;
+            self.identity = ports::device_identity(&self.cfg.path).or(self.identity.take());
             self.attach(port)?;
             if renamed {
                 self.note(&format!("reconnected as {}", self.cfg.path), "32");
@@ -611,6 +619,11 @@ fn escape_name(escape: u8) -> char {
     (b'A' + escape - 1) as char
 }
 
+fn note_line(text: &str, color: &str, mid_line: bool) -> String {
+    let lead = if mid_line { "\r\n" } else { "" };
+    format!("{lead}\x1b[{color}m── {text} ──\x1b[0m\r\n")
+}
+
 /// A baud rate of 0 means "leave the line speed alone", which virtual ports need.
 fn baud_label(baud: u32) -> String {
     if baud == 0 {
@@ -646,6 +659,15 @@ mod tests {
         assert_eq!(ctrl_byte('t'), 0x14);
         assert_eq!(escape_name(0x01), 'A');
         assert_eq!(escape_name(0x14), 'T');
+    }
+
+    #[test]
+    fn notes_break_out_of_an_unfinished_device_line() {
+        // The device left "rst" on screen with no newline; the note must not
+        // be glued to it.
+        assert!(note_line("disconnected", "33", true).starts_with("\r\n\x1b[33m"));
+        assert!(note_line("disconnected", "33", false).starts_with("\x1b[33m"));
+        assert!(note_line("disconnected", "33", false).ends_with("──\x1b[0m\r\n"));
     }
 
     #[test]
