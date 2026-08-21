@@ -27,6 +27,7 @@ const REPLAY_LIMIT: usize = 1000;
 
 pub enum Event {
     Rx(Vec<u8>),
+    InputClosed(String),
     Disconnected(String),
     Stdin(Vec<u8>),
     Tick,
@@ -153,14 +154,26 @@ fn spawn_stdin(tx: Sender<Event>) {
         let mut buf = [0u8; 4096];
         loop {
             match stdin.read(&mut buf) {
-                Ok(0) => return,
+                Ok(0) => {
+                    let _ = tx.send(Event::InputClosed("terminal closed its input".into()));
+                    return;
+                }
                 Ok(n) => {
                     if tx.send(Event::Stdin(buf[..n].to_vec())).is_err() {
                         return;
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => return,
+                // Nothing transient may leave the session deaf: giving up here
+                // means the keyboard stops working while the log keeps
+                // scrolling, and Ctrl-A q along with it.
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => {
+                    let _ = tx.send(Event::InputClosed(e.to_string()));
+                    return;
+                }
             }
         }
     });
@@ -237,6 +250,12 @@ impl Session {
             };
             match ev {
                 Event::Rx(data) => self.on_rx(&data)?,
+                Event::InputClosed(why) => {
+                    // Without input there is no way left to ask for an exit, so
+                    // take one rather than hang holding the port.
+                    self.note(&format!("keyboard input ended ({why}), exiting"), "31");
+                    self.quit = true;
+                }
                 Event::Disconnected(reason) => self.on_disconnect(&reason)?,
                 Event::Stdin(data) => self.on_stdin(&data)?,
                 Event::Tick => self.on_tick()?,
