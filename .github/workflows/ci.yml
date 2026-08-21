@@ -1,0 +1,12 @@
+name: ci
+
+# Documentation-only commits skip the build; nothing they change can break it.
+on:
+  push:
+    branches: [master]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
