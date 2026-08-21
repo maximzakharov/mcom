@@ -2,6 +2,7 @@ mod ansi;
 mod cli;
 mod input;
 mod logfile;
+mod logo;
 mod ports;
 mod scrollback;
 mod serial;

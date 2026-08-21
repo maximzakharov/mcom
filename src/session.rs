@@ -259,8 +259,16 @@ impl Session {
     }
 
     fn banner(&mut self) {
+        let mut art = String::new();
+        for line in crate::logo::BANNER.lines() {
+            art.push_str("\x1b[36m");
+            art.push_str(line);
+            art.push_str("\x1b[0m\r\n");
+        }
+        self.write_out(art.as_bytes());
+
         let msg = format!(
-            "mcom · {} · {} {} · Ctrl-{} q to quit, Ctrl-{} ? for help",
+            "{} · {} {} · Ctrl-{} q to quit, Ctrl-{} ? for help",
             self.cfg.path,
             baud_label(self.cfg.baud),
             self.cfg.frame,
