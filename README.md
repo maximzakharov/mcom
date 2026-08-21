@@ -13,11 +13,29 @@ Works on macOS and Linux.
 
 ## Install
 
+Every release ships prebuilt binaries. Pick the archive matching `uname -m`:
+
+| Machine | Archive |
+| --- | --- |
+| Linux `x86_64` | `mcom-x86_64-unknown-linux-musl.tar.gz` |
+| Linux `aarch64` | `mcom-aarch64-unknown-linux-musl.tar.gz` |
+| Linux `armv7l` | `mcom-armv7-unknown-linux-musleabihf.tar.gz` |
+| macOS, Apple silicon | `mcom-aarch64-apple-darwin.tar.gz` |
+
+```sh
+mkdir -p ~/.local/bin
+curl -fsSL https://github.com/maximzakharov/mcom/releases/latest/download/mcom-aarch64-unknown-linux-musl.tar.gz \
+  | tar xz -C ~/.local/bin
+```
+
+The Linux builds are static, so no particular glibc version is needed — they run
+on any distro, single-board computers included.
+
+Or build it yourself, which puts the binary in `~/.cargo/bin`:
+
 ```sh
 cargo install --path .
 ```
-
-The binary is `mcom`; it lands in `~/.cargo/bin`.
 
 ## Use
 
@@ -78,9 +96,19 @@ including on macOS, where `usbmodem` devices often come back under a new name.
 until the modem asserts DCD, which is why a terminal sometimes just hangs. If you
 pass a `tty` path, mcom switches to the `cu` twin and tells you.
 
-**Linux:** you need access to the port — `sudo usermod -aG dialout $USER`, then
-log out and back in. mcom takes an exclusive `flock`, so a second instance gets a
-clear message naming the port instead of `Resource busy`.
+**Linux:** you need access to the port, and the group that owns it depends on the
+distribution — `dialout` on Debian and Ubuntu, `uucp` on Arch and several SBC
+images, occasionally neither because a udev rule grants access directly. Check
+before adding yourself to anything:
+
+```sh
+ls -l /dev/ttyUSB0        # the third column is the group
+sudo usermod -aG uucp $USER
+```
+
+Group membership only takes effect on your next login. mcom also takes an
+exclusive `flock`, so a second instance gets a clear message naming the port
+instead of `Resource busy`.
 
 **Virtual ports:** pass `-b 0` to leave the line speed alone. Pseudo-terminals
 reject baud rate changes, so this is what `socat` and `pty` devices need.
