@@ -526,7 +526,7 @@ impl Session {
 
     fn enter_tui(&mut self) -> Result<()> {
         self.tui_mark = self.sb.total();
-        self.tui = Some(Tui::new());
+        self.tui = Some(Tui::new()?);
         self.keys = KeyDecoder::default();
         self.term.enter_alt()?;
         self.draw_tui()

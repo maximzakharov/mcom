@@ -3,7 +3,7 @@ use std::io::Stdout;
 use ansi_to_tui::IntoText;
 use anyhow::Result;
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line as TLine, Span};
@@ -39,8 +39,8 @@ enum Mode {
     Filter,
 }
 
-pub struct Tui {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
+pub struct Tui<B: Backend = CrosstermBackend<Stdout>> {
+    terminal: Terminal<B>,
     mode: Mode,
     input: String,
     filter: Option<Regex>,
@@ -55,10 +55,18 @@ pub struct Tui {
     pending_escape: bool,
 }
 
-impl Tui {
-    pub fn new() -> Self {
-        let backend = CrosstermBackend::new(std::io::stdout());
-        let terminal = Terminal::new(backend).expect("terminal backend");
+impl Tui<CrosstermBackend<Stdout>> {
+    pub fn new() -> Result<Self> {
+        let terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
+        Ok(Tui::with_terminal(terminal))
+    }
+}
+
+impl<B: Backend> Tui<B>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    fn with_terminal(terminal: Terminal<B>) -> Self {
         Tui {
             terminal,
             mode: Mode::Normal,
@@ -452,6 +460,7 @@ mod tests {
     use super::*;
     use crate::scrollback::Line;
     use chrono::Local;
+    use ratatui::backend::TestBackend;
     use std::time::Duration;
 
     fn sb_with(lines: &[&str]) -> Scrollback {
@@ -467,21 +476,36 @@ mod tests {
         sb
     }
 
-    fn headless() -> Tui {
-        Tui {
-            terminal: Terminal::new(CrosstermBackend::new(std::io::stdout())).unwrap(),
-            mode: Mode::Normal,
-            input: String::new(),
-            filter: None,
-            filter_src: String::new(),
-            search: None,
-            search_src: String::new(),
-            error: None,
-            cursor: usize::MAX,
-            follow: true,
-            page: 10,
-            pending_escape: false,
+    fn headless() -> Tui<TestBackend> {
+        headless_sized(80, 24)
+    }
+
+    fn headless_sized(w: u16, h: u16) -> Tui<TestBackend> {
+        Tui::with_terminal(Terminal::new(TestBackend::new(w, h)).unwrap())
+    }
+
+    fn status() -> TuiStatus {
+        TuiStatus {
+            port: "/dev/ttyACM0".into(),
+            baud: "115200".into(),
+            frame: "8N1".into(),
+            connected: true,
+            rx_bytes: 2048,
+            ts: TsMode::Off,
+            logging: None,
+            uptime: "0:07".into(),
         }
+    }
+
+    fn rendered(t: &Tui<TestBackend>) -> String {
+        t.terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(t.terminal.backend().buffer().area.width as usize)
+            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -543,6 +567,27 @@ mod tests {
         assert!(matches!(t.on_key(Key::Char('q'), &sb), TuiAction::Leave));
         t.on_key(Key::Ctrl('a'), &sb);
         assert!(matches!(t.on_key(Key::Char('q'), &sb), TuiAction::Quit));
+    }
+
+    #[test]
+    fn draws_the_newest_lines_with_a_status_bar() {
+        let sb = sb_with(&["first", "second", "third"]);
+        let mut t = headless_sized(40, 8);
+        t.draw(&sb, b"", &status()).unwrap();
+        let screen = rendered(&t);
+        assert!(screen.contains("/dev/ttyACM0"), "{screen}");
+        assert!(screen.contains("third"), "{screen}");
+        assert!(screen.contains("3/3"), "{screen}");
+        assert!(screen.contains("follow"), "{screen}");
+    }
+
+    #[test]
+    fn draws_the_unfinished_line_last() {
+        let sb = sb_with(&["done"]);
+        let mut t = headless_sized(40, 8);
+        t.draw(&sb, b"prompt> ", &status()).unwrap();
+        let screen = rendered(&t);
+        assert!(screen.contains("prompt>"), "{screen}");
     }
 
     #[test]

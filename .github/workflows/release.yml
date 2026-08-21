@@ -13,7 +13,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: cargo test --locked
 
   build:
@@ -37,7 +37,7 @@ jobs:
             os: macos-latest
             cross: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Prebuilt cross binary; it builds the musl targets in Docker so no
       # cross-linker has to be installed on the runner.
