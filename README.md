@@ -97,6 +97,10 @@ log file · `--log-format <raw\|clean>` keep escape sequences or strip them
 reconnect to the exact same path · `--escape <CHAR>` use another escape key ·
 `--echo` echo what you type. See `mcom --help` for the full list.
 
+With no path, `--log` and `Ctrl-A l` name the file `mcom-<port>-<date>.log` and
+put it in the directory you started mcom from. The full path is printed when
+logging starts, and `Ctrl-A i` repeats it.
+
 ## Notes
 
 **Unplugging is not fatal.** If the board resets or the cable is pulled, mcom
